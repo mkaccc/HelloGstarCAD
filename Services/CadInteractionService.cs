@@ -1,161 +1,266 @@
 using System;
 using System.Collections.Generic;
-using System.Collections.ObjectModel;
-using System.Linq;
-using HelloGstarCAD.Models;
-
-// 浩辰CAD (GstarCAD) .NET API 的核心命名空间
+using System.IO;
 using GrxCAD.ApplicationServices;
 using GrxCAD.DatabaseServices;
 using GrxCAD.EditorInput;
 using GrxCAD.Geometry;
-using GrxCAD.Runtime;
+using HelloGstarCAD.Models;
 
 namespace HelloGstarCAD.Services
 {
     public class CadInteractionService
     {
-        /// <summary>
-        /// 从当前图纸获取所有图块定义（模型空间和布局中的块表记录）
-        /// </summary>
-        public List<BlockItem> GetBlocksFromDrawing()
-        {
-            List<BlockItem> blockList = new List<BlockItem>();
+        private Document Doc => Application.DocumentManager.MdiActiveDocument;
+        private Database Db => Doc.Database;
+        private Editor Ed => Doc.Editor;
 
+        public List<BlockItem> SelectBlocks(string targetAttributeTag = "A")
+        {
+            var blockList = new List<BlockItem>();
             try
             {
-                // 获取当前文档和数据库
-                Document doc = Application.DocumentManager.MdiActiveDocument;
-                if (doc == null)
+                Ed.WriteMessage($"\n请选择图块（将按图块名称去重）...\n");
+                
+                TypedValue[] filterList = { new TypedValue((int)DxfCode.Start, "INSERT") };
+                var filter = new SelectionFilter(filterList);
+                var selResult = Ed.GetSelection(filter);
+
+                if (selResult.Status == PromptStatus.OK)
                 {
-                    return blockList;
-                }
-
-                Database db = doc.Database;
-
-                using (Transaction trans = db.TransactionManager.StartTransaction())
-                {
-                    // 打开块表
-                    BlockTable blockTable = (BlockTable)trans.GetObject(db.BlockTableId, OpenMode.ForRead);
-
-                    foreach (ObjectId blockRecordId in blockTable)
+                    using (var tr = Db.TransactionManager.StartTransaction())
                     {
-                        BlockTableRecord blockRecord = (BlockTableRecord)trans.GetObject(blockRecordId, OpenMode.ForRead);
-
-                        // 排除 *Model_Space, *Paper_Space 等布局
-                        if (!blockRecord.IsLayout && !blockRecord.Name.StartsWith("*"))
+                        // 用于跟踪已处理的图块名称（按图块名称去重）
+                        var processedBlockNames = new HashSet<string>();
+                        
+                        foreach (var selectedId in selResult.Value.GetObjectIds())
                         {
-                            BlockItem item = new BlockItem
+                            var blockRef = tr.GetObject(selectedId, OpenMode.ForRead) as BlockReference;
+                            if (blockRef == null) continue;
+
+                            // 获取块定义名称
+                            var blockDef = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                            string blockName = blockDef.Name;
+                            
+                            // 关键：如果已处理过此图块名称，则跳过（实现去重）
+                            if (processedBlockNames.Contains(blockName))
                             {
-                                // 块表记录名即为图块名
-                                Name = blockRecord.Name,
-                                // 此处示例：使用块的原点或边界信息作为位置描述
-                                // 实际可根据需要获取插入点、边界框等
-                                Location = GetBlockLocationDescription(blockRecord)
+                                continue;
+                            }
+                            
+                            processedBlockNames.Add(blockName);
+                            
+                            // 查找目标属性
+                            string actualAttributeTag = targetAttributeTag;
+                            string attributeValue = "未命名";
+                            
+                            // 查找指定属性
+                            foreach (ObjectId attId in blockRef.AttributeCollection)
+                            {
+                                var attRef = tr.GetObject(attId, OpenMode.ForRead) as AttributeReference;
+                                if (attRef != null && attRef.Tag.Equals(targetAttributeTag, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    attributeValue = attRef.TextString;
+                                    actualAttributeTag = attRef.Tag;
+                                    break;
+                                }
+                            }
+                            
+                            // 如果没有找到指定属性，使用第一个属性
+                            if (attributeValue == "未命名" && blockRef.AttributeCollection.Count > 0)
+                            {
+                                var firstAttId = blockRef.AttributeCollection[0];
+                                var firstAttRef = tr.GetObject(firstAttId, OpenMode.ForRead) as AttributeReference;
+                                if (firstAttRef != null)
+                                {
+                                    attributeValue = firstAttRef.TextString;
+                                    actualAttributeTag = firstAttRef.Tag;
+                                }
+                            }
+                            
+                            var blockItem = new BlockItem
+                            {
+                                BlockName = blockName,
+                                AttributeTag = actualAttributeTag,
+                                OriginalAttributeValue = attributeValue, // 保存原始值
+                                AttributeValue = attributeValue, // 当前值初始化为原始值
+                                ExampleBlockId = selectedId
                             };
-                            blockList.Add(item);
+                            
+                            blockList.Add(blockItem);
+                        }
+                        tr.Commit();
+                    }
+                    
+                    Ed.WriteMessage($"\n成功读取 {blockList.Count} 种不重复的图块类型。\n");
+                    
+                    // 显示添加的图块列表
+                    if (blockList.Count > 0)
+                    {
+                        Ed.WriteMessage("已添加的图块类型:\n");
+                        foreach (var block in blockList)
+                        {
+                            Ed.WriteMessage($"  • {block.BlockName} = {block.OriginalAttributeValue}\n");
                         }
                     }
-                    trans.Commit();
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                // 实际开发中应使用更完善的日志记录
-                System.Diagnostics.Debug.WriteLine($"[浩辰CAD服务] 获取图块列表时出错: {ex.Message}");
+                LogError("选择图块时出错", ex);
             }
-
             return blockList;
         }
 
-        /// <summary>
-        /// 辅助方法：生成图块的位置描述信息
-        /// </summary>
-        private string GetBlockLocationDescription(BlockTableRecord btr)
+        // 注意：这个方法不再被调用，但保留在代码中
+        public bool UpdateBlockAttributes(string blockName, string attributeTag, string newValue)
         {
-            // 示例：返回块的原点
-            // 实际可能需计算边界框或获取其他特征点
-            if (btr != null && btr.Bounds.HasValue)
-            {
-                var bounds = btr.Bounds.Value;
-                var minPoint = bounds.MinPoint;
-                return $"({minPoint.X:F1}, {minPoint.Y:F1}, {minPoint.Z:F1})";
-            }
-            return "(原点)";
-        }
-
-        /// <summary>
-        /// 从当前编辑器选择集获取图块参照（INSERT）实例
-        /// </summary>
-        public List<BlockItem> GetSelectedBlocks()
-        {
-            List<BlockItem> selectedBlocks = new List<BlockItem>();
-
             try
             {
-                Document doc = Application.DocumentManager.MdiActiveDocument;
-                if (doc == null) return selectedBlocks;
-
-                Editor editor = doc.Editor;
-
-                // 构建一个选择过滤器，仅选择图块参照（INSERT）
-                TypedValue[] filterValues = new TypedValue[]
+                int updatedCount = 0;
+                
+                using (var tr = Db.TransactionManager.StartTransaction())
                 {
-                    new TypedValue((int)DxfCode.Start, "INSERT")
-                };
-                SelectionFilter filter = new SelectionFilter(filterValues);
-
-                // 提示用户在CAD界面中选择
-                PromptSelectionResult selectionResult = editor.GetSelection(filter);
-                if (selectionResult.Status == PromptStatus.OK)
-                {
-                    using (Transaction trans = doc.Database.TransactionManager.StartTransaction())
+                    // 获取块表
+                    var blockTable = tr.GetObject(Db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                    
+                    // 查找指定名称的图块定义
+                    foreach (ObjectId blockDefId in blockTable)
                     {
-                        foreach (SelectedObject selectedObj in selectionResult.Value)
+                        var blockDef = tr.GetObject(blockDefId, OpenMode.ForRead) as BlockTableRecord;
+                        if (blockDef.Name == blockName)
                         {
-                            if (selectedObj != null)
+                            // 找到所有此图块的实例
+                            var refIds = blockDef.GetBlockReferenceIds(true, false);
+                            
+                            foreach (ObjectId refId in refIds)
                             {
-                                // 获取被选中的图块参照
-                                BlockReference blockRef = trans.GetObject(selectedObj.ObjectId, OpenMode.ForRead) as BlockReference;
+                                var blockRef = tr.GetObject(refId, OpenMode.ForWrite) as BlockReference;
                                 if (blockRef != null)
                                 {
-                                    BlockItem item = new BlockItem
+                                    // 更新属性
+                                    foreach (ObjectId attId in blockRef.AttributeCollection)
                                     {
-                                        // BlockReference 的 Name 即为其对应的块表记录名
-                                        Name = blockRef.Name,
-                                        Location = $"({blockRef.Position.X:F1}, {blockRef.Position.Y:F1}, {blockRef.Position.Z:F1})"
-                                    };
-                                    selectedBlocks.Add(item);
+                                        var attRef = tr.GetObject(attId, OpenMode.ForWrite) as AttributeReference;
+                                        if (attRef != null && attRef.Tag.Equals(attributeTag, StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            attRef.TextString = newValue;
+                                            updatedCount++;
+                                            break;
+                                        }
+                                    }
                                 }
                             }
+                            break; // 找到目标图块定义后退出
                         }
-                        trans.Commit();
+                    }
+                    
+                    tr.Commit();
+                    
+                    if (updatedCount > 0)
+                    {
+                        Ed.WriteMessage($"\n已更新图块 '{blockName}' 的 {updatedCount} 个实例，属性 {attributeTag} = {newValue}\n");
+                        return true;
+                    }
+                    else
+                    {
+                        Ed.WriteMessage($"\n警告：未找到图块 '{blockName}' 或没有可更新的实例\n");
                     }
                 }
             }
-            catch (System.Exception ex)
+            catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"[浩辰CAD服务] 获取选择集时出错: {ex.Message}");
+                LogError($"更新图块 '{blockName}' 属性时出错", ex);
             }
-
-            return selectedBlocks;
+            return false;
         }
 
-        /// <summary>
-        /// 将当前选择集中的图块添加到提供的集合中
-        /// </summary>
-        public void AddSelectedBlocksToModel(ObservableCollection<BlockItem> currentCollection)
+        public ObjectId? SelectPolyline()
         {
-            if (currentCollection == null) return;
-
-            var selected = GetSelectedBlocks();
-            foreach (var block in selected)
+            try
             {
-                // 简单的重复判断：名称和位置均相同视为同一图块实例
-                if (!currentCollection.Any(b => b.Name == block.Name && b.Location == block.Location))
+                Ed.WriteMessage("\n请选择一条多段线作为编号路径...\n");
+                
+                var peo = new PromptEntityOptions("\n请选择一条多段线作为编号路径: ");
+                peo.SetRejectMessage("\n请选择一条多段线。\n");
+                peo.AddAllowedClass(typeof(Polyline), true);
+                peo.AddAllowedClass(typeof(Polyline2d), true);
+                peo.AddAllowedClass(typeof(Polyline3d), true);
+
+                var per = Ed.GetEntity(peo);
+                if (per.Status == PromptStatus.OK)
                 {
-                    currentCollection.Add(block);
+                    return per.ObjectId;
                 }
+            }
+            catch (Exception ex)
+            {
+                LogError("选择多段线时出错", ex);
+            }
+            return null;
+        }
+
+        public void PlaceNumbersAlongPolyline(ObjectId polylineId, List<BlockItem> blocks, string prefix, string suffix, int startNumber)
+        {
+            using (var tr = Db.TransactionManager.StartTransaction())
+            {
+                var polyline = tr.GetObject(polylineId, OpenMode.ForRead) as Curve;
+                if (polyline == null) 
+                {
+                    Ed.WriteMessage("\n错误：选择的对象不是有效的曲线。\n");
+                    return;
+                }
+
+                var blockTable = tr.GetObject(Db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                var modelSpace = tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
+
+                int currentNumber = startNumber;
+                foreach (var blockItem in blocks)
+                {
+                    // 使用存储的示例实例ID
+                    if (blockItem.ExampleBlockId.IsValid)
+                    {
+                        var blockRef = tr.GetObject(blockItem.ExampleBlockId, OpenMode.ForRead) as BlockReference;
+                        if (blockRef != null)
+                        {
+                            Point3d blockPosition = blockRef.Position;
+                            Point3d projectedPoint = polyline.GetClosestPointTo(blockPosition, false);
+
+                            // 使用AttributeValue作为编号文本（现在作为标题）
+                            string numberText = $"{prefix}{currentNumber}{blockItem.AttributeValue}{suffix}";
+
+                            var dbText = new DBText
+                            {
+                                TextString = numberText,
+                                Position = projectedPoint,
+                                Height = 2.5,
+                                Justify = AttachmentPoint.MiddleCenter
+                            };
+
+                            modelSpace.AppendEntity(dbText);
+                            tr.AddNewlyCreatedDBObject(dbText, true);
+                            currentNumber++;
+                            
+                            Ed.WriteMessage($"\n已创建编号: {numberText} (图块: {blockItem.BlockName})");
+                        }
+                    }
+                }
+                tr.Commit();
+                Ed.WriteMessage($"\n\n沿线编号完成，共创建 {blocks.Count} 个编号。\n");
+            }
+        }
+
+        private void LogError(string message, Exception ex)
+        {
+            try
+            {
+                string logPath = @"C:\Temp\GstarCAD_Plugin_Log.txt";
+                System.IO.File.AppendAllText(logPath, $"[ERROR] {DateTime.Now}: {message}\n{ex}\n\n");
+                Ed.WriteMessage($"\n[错误] {message}。详情请查看日志: {logPath}\n");
+            }
+            catch
+            {
+                // 忽略日志记录错误
             }
         }
     }
