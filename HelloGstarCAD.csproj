@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net48</TargetFramework>
+    <OutputType>Library</OutputType>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
+    <UseWPF>true</UseWPF>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 浩辰CAD引用 -->
+    <Reference Include="gmap">
+      <HintPath>C:\grxsdk\inc\gmap.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="gmdb">
+      <HintPath>C:\grxsdk\inc\gmdb.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="GrxCAD.Interop">
+      <!-- 重要：根据你的浩辰CAD位数选择 inc-x86 (32位) 或 inc-x64 (64位) -->
+      <HintPath>C:\grxsdk\inc-x64\GrxCAD.Interop.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+</Project>

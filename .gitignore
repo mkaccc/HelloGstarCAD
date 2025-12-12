@@ -1,0 +1,9 @@
+## 忽略Visual Studio编译目录和文件
+[Bb]in/
+[Oo]bj/
+*.user
+*.suo
+*.cache
+*.pdb
+*.dll
+!**/Properties/AssemblyInfo.cs
