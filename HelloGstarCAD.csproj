@@ -18,9 +18,13 @@
       <Private>false</Private>
     </Reference>
     <Reference Include="GrxCAD.Interop">
-      <!-- 重要：根据你的浩辰CAD位数选择 inc-x86 (32位) 或 inc-x64 (64位) -->
       <HintPath>C:\grxsdk\inc-x64\GrxCAD.Interop.dll</HintPath>
       <Private>false</Private>
     </Reference>
+    
+    <!-- WPF核心引用 -->
+    <Reference Include="PresentationCore" />
+    <Reference Include="PresentationFramework" />
+    <Reference Include="WindowsBase" />
   </ItemGroup>
 </Project>

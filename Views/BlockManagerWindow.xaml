@@ -26,8 +26,8 @@
             </Style.Triggers>
         </Style>
         
-        <!-- 列表项样式 -->
-        <Style TargetType="ListBoxItem">
+        <!-- 拖拽排序样式 -->
+        <Style x:Key="DragItemStyle" TargetType="ListBoxItem">
             <Setter Property="Background" Value="Transparent"/>
             <Setter Property="Template">
                 <Setter.Value>
@@ -36,17 +36,38 @@
                                 BorderBrush="{TemplateBinding BorderBrush}" 
                                 BorderThickness="{TemplateBinding BorderThickness}" 
                                 Padding="{TemplateBinding Padding}">
-                            <ContentPresenter/>
+                            <!-- 添加拖拽手柄区域 -->
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto"/>
+                                    <ColumnDefinition Width="*"/>
+                                </Grid.ColumnDefinitions>
+                                
+                                <!-- 拖拽手柄图标 -->
+                                <Border x:Name="DragHandle" Grid.Column="0" Width="20" VerticalAlignment="Stretch" 
+                                        Background="Transparent" Cursor="SizeAll"
+                                        ToolTip="拖拽排序">
+                                    <TextBlock Text="☰" Foreground="#AAA" FontSize="12" 
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                                </Border>
+                                
+                                <!-- 原有内容容器 -->
+                                <ContentPresenter Grid.Column="1"/>
+                            </Grid>
                         </Border>
+                        
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="#FFF0F8FF"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#FFBBDEFB"/>
+                                <Setter TargetName="Bd" Property="BorderThickness" Value="1"/>
                             </Trigger>
                             <Trigger Property="IsSelected" Value="True">
                                 <Setter TargetName="Bd" Property="Background" Value="#FFE1F5FE"/>
                                 <Setter TargetName="Bd" Property="BorderBrush" Value="#FF2196F3"/>
                                 <Setter TargetName="Bd" Property="BorderThickness" Value="1"/>
                             </Trigger>
+                            <!-- 移除不存在的 IsDragOver 触发器 -->
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -82,7 +103,13 @@
             <!-- 图块列表（占满整个区域） -->
             <ListBox x:Name="LbBlocks" Margin="5" 
                      ScrollViewer.VerticalScrollBarVisibility="Auto"
-                     ItemsSource="{Binding}">
+                     ItemsSource="{Binding}"
+                     AllowDrop="True"
+                     ItemContainerStyle="{StaticResource DragItemStyle}"
+                     PreviewMouseLeftButtonDown="LbBlocks_PreviewMouseLeftButtonDown"
+                     Drop="LbBlocks_Drop"
+                     DragOver="LbBlocks_DragOver"
+                     DragLeave="LbBlocks_DragLeave">
                 <ListBox.ItemTemplate>
                     <DataTemplate>
                         <Border BorderBrush="#E0E0E0" BorderThickness="0,0,0,1" Padding="8,6">
