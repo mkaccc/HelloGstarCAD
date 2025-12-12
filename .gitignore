@@ -1,4 +1,4 @@
-## 忽略Visual Studio编译目录和文件
+## Visual Studio 和编译输出
 [Bb]in/
 [Oo]bj/
 *.user
@@ -6,4 +6,6 @@
 *.cache
 *.pdb
 *.dll
-!**/Properties/AssemblyInfo.cs
+.vs/
+## 插件打包或本地临时文件
+publish/
