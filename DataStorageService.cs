@@ -83,16 +83,14 @@ namespace HelloGstarCAD.Services
             }
         }
 
-        // 加载数据
-        public List<BlockItem> LoadBlockItems()
+        // 加载存储的数据项（不包含ExampleBlockId）
+        public List<StoredBlockItem> LoadStoredBlockItems()
         {
-            var blockItems = new List<BlockItem>();
-            
             try
             {
                 if (!File.Exists(_storagePath))
                 {
-                    return blockItems; // 文件不存在，返回空列表
+                    return new List<StoredBlockItem>(); // 文件不存在，返回空列表
                 }
 
                 var serializer = new DataContractJsonSerializer(typeof(List<StoredBlockItem>));
@@ -100,32 +98,14 @@ namespace HelloGstarCAD.Services
                 using (var stream = new FileStream(_storagePath, FileMode.Open))
                 {
                     var storedItems = serializer.ReadObject(stream) as List<StoredBlockItem>;
-                    
-                    if (storedItems != null)
-                    {
-                        foreach (var storedItem in storedItems)
-                        {
-                            var blockItem = new BlockItem
-                            {
-                                BlockName = storedItem.BlockName,
-                                AttributeTag = storedItem.AttributeTag,
-                                OriginalAttributeValue = storedItem.OriginalAttributeValue,
-                                AttributeValue = storedItem.AttributeValue,
-                                Index = storedItem.Index
-                            };
-                            
-                            blockItems.Add(blockItem);
-                        }
-                    }
+                    return storedItems ?? new List<StoredBlockItem>();
                 }
             }
             catch (Exception ex)
             {
-                // 记录错误但继续运行
                 System.Diagnostics.Debug.WriteLine($"加载数据时出错: {ex.Message}");
+                return new List<StoredBlockItem>();
             }
-            
-            return blockItems;
         }
 
         // 清空保存的数据

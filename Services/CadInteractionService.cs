@@ -6,6 +6,7 @@ using GrxCAD.DatabaseServices;
 using GrxCAD.EditorInput;
 using GrxCAD.Geometry;
 using HelloGstarCAD.Models;
+using HelloGstarCAD.Services;
 
 namespace HelloGstarCAD.Services
 {
@@ -112,6 +113,120 @@ namespace HelloGstarCAD.Services
             return blockList;
         }
 
+        // 重新关联存储的图块项到CAD中的实际图块
+        public List<BlockItem> ReloadAndAssociateBlocks(List<StoredBlockItem> storedItems)
+        {
+            var blockList = new List<BlockItem>();
+            
+            try
+            {
+                if (storedItems == null || storedItems.Count == 0)
+                {
+                    return blockList;
+                }
+                
+                using (var tr = Db.TransactionManager.StartTransaction())
+                {
+                    // 获取所有块引用，按名称分组
+                    var blockRefsByName = new Dictionary<string, ObjectId>();
+                    
+                    // 遍历模型空间中的所有块引用
+                    var blockTable = tr.GetObject(Db.BlockTableId, OpenMode.ForRead) as BlockTable;
+                    var modelSpace = tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForRead) as BlockTableRecord;
+                    
+                    foreach (ObjectId objId in modelSpace)
+                    {
+                        var blockRef = tr.GetObject(objId, OpenMode.ForRead) as BlockReference;
+                        if (blockRef != null)
+                        {
+                            var blockDef = tr.GetObject(blockRef.BlockTableRecord, OpenMode.ForRead) as BlockTableRecord;
+                            string blockName = blockDef.Name;
+                            
+                            // 为每种图块名称存储一个示例ObjectId
+                            if (!blockRefsByName.ContainsKey(blockName))
+                            {
+                                blockRefsByName[blockName] = objId;
+                            }
+                        }
+                    }
+                    
+                    // 遍历存储的图块项，尝试重新关联
+                    foreach (var storedItem in storedItems)
+                    {
+                        if (blockRefsByName.TryGetValue(storedItem.BlockName, out ObjectId blockId))
+                        {
+                            // 创建一个新的BlockItem并关联到现有的图块
+                            var blockItem = new BlockItem
+                            {
+                                BlockName = storedItem.BlockName,
+                                AttributeTag = storedItem.AttributeTag,
+                                OriginalAttributeValue = storedItem.OriginalAttributeValue,
+                                AttributeValue = storedItem.AttributeValue,
+                                Index = storedItem.Index,
+                                ExampleBlockId = blockId
+                            };
+                            
+                            blockList.Add(blockItem);
+                        }
+                        else
+                        {
+                            // 如果找不到对应的图块，创建一个没有ExampleBlockId的项
+                            // 用户可能已删除该图块，但仍可在列表中看到
+                            var blockItem = new BlockItem
+                            {
+                                BlockName = storedItem.BlockName,
+                                AttributeTag = storedItem.AttributeTag,
+                                OriginalAttributeValue = storedItem.OriginalAttributeValue,
+                                AttributeValue = storedItem.AttributeValue,
+                                Index = storedItem.Index,
+                                ExampleBlockId = ObjectId.Null
+                            };
+                            
+                            blockList.Add(blockItem);
+                        }
+                    }
+                    
+                    tr.Commit();
+                }
+                
+                // 统计关联结果
+                int associatedCount = 0;
+                int missingCount = 0;
+                foreach (var block in blockList)
+                {
+                    if (block.ExampleBlockId.IsValid)
+                    {
+                        associatedCount++;
+                    }
+                    else
+                    {
+                        missingCount++;
+                    }
+                }
+                
+                Ed.WriteMessage($"\n图块重新关联完成：成功关联 {associatedCount} 个，缺失 {missingCount} 个。\n");
+                
+                // 显示缺失的图块名称
+                if (missingCount > 0)
+                {
+                    Ed.WriteMessage("以下图块在图纸中未找到：\n");
+                    foreach (var block in blockList)
+                    {
+                        if (!block.ExampleBlockId.IsValid)
+                        {
+                            Ed.WriteMessage($"  • {block.BlockName}\n");
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                LogError("重新关联图块时出错", ex);
+            }
+            
+            return blockList;
+        }
+
         // 注意：这个方法不再被调用，但保留在代码中
         public bool UpdateBlockAttributes(string blockName, string attributeTag, string newValue)
         {
@@ -215,38 +330,67 @@ namespace HelloGstarCAD.Services
                 var modelSpace = tr.GetObject(blockTable[BlockTableRecord.ModelSpace], OpenMode.ForWrite) as BlockTableRecord;
 
                 int currentNumber = startNumber;
+                int createdCount = 0;
+                int skippedCount = 0;
+                
                 foreach (var blockItem in blocks)
                 {
-                    // 使用存储的示例实例ID
+                    // 检查ExampleBlockId是否有效
                     if (blockItem.ExampleBlockId.IsValid)
                     {
-                        var blockRef = tr.GetObject(blockItem.ExampleBlockId, OpenMode.ForRead) as BlockReference;
-                        if (blockRef != null)
+                        try
                         {
-                            Point3d blockPosition = blockRef.Position;
-                            Point3d projectedPoint = polyline.GetClosestPointTo(blockPosition, false);
-
-                            // 使用AttributeValue作为编号文本（现在作为标题）
-                            string numberText = $"{prefix}{currentNumber}{blockItem.AttributeValue}{suffix}";
-
-                            var dbText = new DBText
+                            var blockRef = tr.GetObject(blockItem.ExampleBlockId, OpenMode.ForRead) as BlockReference;
+                            if (blockRef != null)
                             {
-                                TextString = numberText,
-                                Position = projectedPoint,
-                                Height = 2.5,
-                                Justify = AttachmentPoint.MiddleCenter
-                            };
+                                Point3d blockPosition = blockRef.Position;
+                                Point3d projectedPoint = polyline.GetClosestPointTo(blockPosition, false);
 
-                            modelSpace.AppendEntity(dbText);
-                            tr.AddNewlyCreatedDBObject(dbText, true);
-                            currentNumber++;
-                            
-                            Ed.WriteMessage($"\n已创建编号: {numberText} (图块: {blockItem.BlockName})");
+                                // 使用AttributeValue作为编号文本（现在作为标题）
+                                string numberText = $"{prefix}{currentNumber}{blockItem.AttributeValue}{suffix}";
+
+                                var dbText = new DBText
+                                {
+                                    TextString = numberText,
+                                    Position = projectedPoint,
+                                    Height = 2.5,
+                                    Justify = AttachmentPoint.MiddleCenter
+                                };
+
+                                modelSpace.AppendEntity(dbText);
+                                tr.AddNewlyCreatedDBObject(dbText, true);
+                                currentNumber++;
+                                createdCount++;
+                                
+                                Ed.WriteMessage($"\n已创建编号: {numberText} (图块: {blockItem.BlockName})");
+                            }
+                            else
+                            {
+                                Ed.WriteMessage($"\n警告: 图块 '{blockItem.BlockName}' 的引用无效，跳过编号。");
+                                skippedCount++;
+                            }
+                        }
+                        catch
+                        {
+                            Ed.WriteMessage($"\n警告: 无法访问图块 '{blockItem.BlockName}'，可能已被删除，跳过编号。");
+                            skippedCount++;
                         }
                     }
+                    else
+                    {
+                        Ed.WriteMessage($"\n警告: 图块 '{blockItem.BlockName}' 没有有效的关联，跳过编号。");
+                        skippedCount++;
+                    }
                 }
+                
                 tr.Commit();
-                Ed.WriteMessage($"\n\n沿线编号完成，共创建 {blocks.Count} 个编号。\n");
+                
+                Ed.WriteMessage($"\n\n沿线编号完成，成功创建 {createdCount} 个编号");
+                if (skippedCount > 0)
+                {
+                    Ed.WriteMessage($"，跳过 {skippedCount} 个无法关联的图块");
+                }
+                Ed.WriteMessage("。\n");
             }
         }
 

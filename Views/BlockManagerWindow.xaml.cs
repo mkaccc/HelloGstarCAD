@@ -19,27 +19,32 @@ namespace HelloGstarCAD.Views
     {
         private ObservableCollection<BlockItem> _blockItems;
         private CadInteractionService _cadService;
-        private DataStorageService _dataStorageService; // 新增数据存储服务
+        private DataStorageService _dataStorageService;
         private ObjectId? _selectedPolylineId;
         
         // 新增：拖拽相关字段
         private int _dragStartIndex = -1;
         private Point _dragStartPoint;
         private ListBoxItem _lastDragOverItem;
+        
+        // 新增：标记是否正在重新关联图块
+        private bool _isReloadingBlocks = false;
 
         public BlockManagerWindow()
         {
             InitializeComponent();
             
-            // 初始化数据存储服务
+            // 初始化服务
             _dataStorageService = new DataStorageService();
+            _cadService = new CadInteractionService();
             
-            // 先尝试从本地加载保存的数据
-            var savedItems = _dataStorageService.LoadBlockItems();
-            _blockItems = new ObservableCollection<BlockItem>(savedItems);
+            // 创建空列表
+            _blockItems = new ObservableCollection<BlockItem>();
+            
+            // 标记为正在重新关联
+            _isReloadingBlocks = true;
             
             LbBlocks.ItemsSource = _blockItems;
-            _cadService = new CadInteractionService();
             _selectedPolylineId = null;
             _lastDragOverItem = null;
             
@@ -61,18 +66,91 @@ namespace HelloGstarCAD.Views
             // 窗口关闭时保存数据
             this.Closing += BlockManagerWindow_Closing;
             
-            // 如果有加载的数据，更新索引
-            if (_blockItems.Count > 0)
-            {
-                UpdateListIndexes();
-                LbBlocks.SelectedIndex = 0;
-                
-                // 在CAD中显示提示
-                var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
-                ed.WriteMessage($"\n已自动加载 {_blockItems.Count} 个已保存的图块。\n");
-            }
-            
             UpdateNumberTemplatePreview();
+        }
+        
+        // 新增：窗口加载完成后重新关联图块
+        protected override void OnContentRendered(EventArgs e)
+        {
+            base.OnContentRendered(e);
+            
+            // 只有在需要重新关联时才执行
+            if (_isReloadingBlocks)
+            {
+                _isReloadingBlocks = false;
+                
+                // 先加载存储的数据项
+                var storedItems = _dataStorageService.LoadStoredBlockItems();
+                
+                // 如果有存储的数据，尝试重新关联
+                if (storedItems.Count > 0)
+                {
+                    this.Hide();
+                    
+                    try
+                    {
+                        var associatedBlocks = _cadService.ReloadAndAssociateBlocks(storedItems);
+                        
+                        // 计算成功关联的图块数量
+                        int associatedCount = associatedBlocks.Count(b => b.ExampleBlockId.IsValid);
+                        int missingCount = associatedBlocks.Count(b => !b.ExampleBlockId.IsValid);
+                        
+                        // 清空当前列表
+                        _blockItems.Clear();
+                        
+                        // 添加到列表
+                        foreach (var block in associatedBlocks)
+                        {
+                            _blockItems.Add(block);
+                        }
+                        
+                        // 更新索引
+                        UpdateListIndexes();
+                        
+                        // 显示信息
+                        var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                        
+                        if (associatedCount > 0)
+                        {
+                            ed.WriteMessage($"\n已自动加载 {associatedCount} 个图块");
+                            
+                            if (missingCount > 0)
+                            {
+                                ed.WriteMessage($"，但有 {missingCount} 个图块在图纸中未找到。\n");
+                            }
+                            else
+                            {
+                                ed.WriteMessage("。\n");
+                            }
+                        }
+                        else if (missingCount > 0)
+                        {
+                            ed.WriteMessage($"\n警告: 所有 {missingCount} 个保存的图块在图纸中均未找到，可能图纸已更换。\n");
+                        }
+                        
+                        // 如果有有效图块，选中第一个
+                        if (_blockItems.Count > 0)
+                        {
+                            LbBlocks.SelectedIndex = 0;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"重新关联图块时出错: {ex.Message}");
+                        
+                        var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                        ed.WriteMessage($"\n重新关联图块时出错: {ex.Message}\n");
+                    }
+                    finally
+                    {
+                        // 确保窗口重新显示
+                        if (!this.IsVisible)
+                        {
+                            this.ShowDialog();
+                        }
+                    }
+                }
+            }
         }
 
         // 新增：窗口关闭时保存数据
@@ -247,29 +325,52 @@ namespace HelloGstarCAD.Views
                 return;
             }
 
+            // 关键修改：先确认，然后隐藏窗口执行编号
+            string previewTitle = _blockItems[0].AttributeValue;
+            var confirmResult = MessageBox.Show($"将为 {_blockItems.Count} 种图块创建沿线编号。\n格式: {TxtPrefix.Text}{startNumber}{previewTitle}{TxtSuffix.Text}\n\n是否继续？", 
+                "确认沿线编号", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            
+            if (confirmResult != MessageBoxResult.Yes)
+            {
+                return; // 用户取消
+            }
+
+            // 隐藏窗口，确保CAD获得焦点
+            this.Hide();
+            
             try
             {
-                // 使用AttributeValue（作为标题）作为预览
-                string previewTitle = _blockItems[0].AttributeValue;
-                var confirmResult = MessageBox.Show($"将为 {_blockItems.Count} 种图块创建沿线编号。\n格式: {TxtPrefix.Text}{startNumber}{previewTitle}{TxtSuffix.Text}\n\n是否继续？", 
-                    "确认沿线编号", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                string prefix = TxtPrefix.Text;
+                string suffix = TxtSuffix.Text;
                 
-                if (confirmResult == MessageBoxResult.Yes)
-                {
-                    string prefix = TxtPrefix.Text;
-                    string suffix = TxtSuffix.Text;
-                    
-                    _cadService.PlaceNumbersAlongPolyline(_selectedPolylineId.Value, 
-                        _blockItems.ToList(), prefix, suffix, startNumber);
-                    
-                    MessageBox.Show($"✅ 沿线编号完成！\n共为 {_blockItems.Count} 种图块创建了编号。", 
-                        "完成", MessageBoxButton.OK, MessageBoxImage.Information);
-                }
+                // 新增调试信息：记录开始时间
+                var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                ed.WriteMessage($"\n开始沿线编号... (隐藏界面以专注CAD操作)\n");
+                
+                // 执行编号操作
+                _cadService.PlaceNumbersAlongPolyline(_selectedPolylineId.Value, 
+                    _blockItems.ToList(), prefix, suffix, startNumber);
+                
+                // 新增：强制CAD重生成显示
+                ed.Regen();
+                
+                // 提示用户编号完成
+                MessageBox.Show($"✅ 沿线编号完成！\n共为 {_blockItems.Count} 种图块创建了编号。\n\n提示：如果看不到编号文本，请尝试使用 ZOOM EXTENTS 命令。", 
+                    "完成", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
             {
+                // 记录详细错误信息
+                var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                ed.WriteMessage($"\n[错误] 编号过程中发生错误: {ex.Message}\n{ex.StackTrace}\n");
+                
                 MessageBox.Show($"编号过程中发生错误:\n{ex.Message}", "错误", 
                     MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                // 无论成功与否，都重新显示窗口
+                this.ShowDialog();
             }
         }
 
