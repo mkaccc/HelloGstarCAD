@@ -26,5 +26,8 @@
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
     <Reference Include="WindowsBase" />
+    
+    <!-- 序列化所需引用 -->
+    <Reference Include="System.Runtime.Serialization" />
   </ItemGroup>
 </Project>

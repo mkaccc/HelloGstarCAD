@@ -19,6 +19,7 @@ namespace HelloGstarCAD.Views
     {
         private ObservableCollection<BlockItem> _blockItems;
         private CadInteractionService _cadService;
+        private DataStorageService _dataStorageService; // 新增数据存储服务
         private ObjectId? _selectedPolylineId;
         
         // 新增：拖拽相关字段
@@ -29,7 +30,14 @@ namespace HelloGstarCAD.Views
         public BlockManagerWindow()
         {
             InitializeComponent();
-            _blockItems = new ObservableCollection<BlockItem>();
+            
+            // 初始化数据存储服务
+            _dataStorageService = new DataStorageService();
+            
+            // 先尝试从本地加载保存的数据
+            var savedItems = _dataStorageService.LoadBlockItems();
+            _blockItems = new ObservableCollection<BlockItem>(savedItems);
+            
             LbBlocks.ItemsSource = _blockItems;
             _cadService = new CadInteractionService();
             _selectedPolylineId = null;
@@ -50,7 +58,41 @@ namespace HelloGstarCAD.Views
             TxtSuffix.TextChanged += (s, e) => UpdateNumberTemplatePreview();
             TxtStartNum.TextChanged += (s, e) => UpdateNumberTemplatePreview();
             
+            // 窗口关闭时保存数据
+            this.Closing += BlockManagerWindow_Closing;
+            
+            // 如果有加载的数据，更新索引
+            if (_blockItems.Count > 0)
+            {
+                UpdateListIndexes();
+                LbBlocks.SelectedIndex = 0;
+                
+                // 在CAD中显示提示
+                var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                ed.WriteMessage($"\n已自动加载 {_blockItems.Count} 个已保存的图块。\n");
+            }
+            
             UpdateNumberTemplatePreview();
+        }
+
+        // 新增：窗口关闭时保存数据
+        private void BlockManagerWindow_Closing(object sender, System.ComponentModel.CancelEventArgs e)
+        {
+            try
+            {
+                // 保存当前列表数据
+                bool saveSuccess = _dataStorageService.SaveBlockItems(_blockItems.ToList());
+                
+                if (saveSuccess && _blockItems.Count > 0)
+                {
+                    var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
+                    ed.WriteMessage($"\n已自动保存 {_blockItems.Count} 个图块到本地。\n");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"保存数据时出错: {ex.Message}");
+            }
         }
 
         private void BtnSelectBlocks_Click(object sender, RoutedEventArgs e)
@@ -80,6 +122,12 @@ namespace HelloGstarCAD.Views
                         UpdateListIndexes();
                         var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
                         ed.WriteMessage($"\n成功添加 {addedCount} 种不重复的图块类型到列表\n");
+                        
+                        // 如果有新图块添加，自动选中第一个
+                        if (LbBlocks.SelectedIndex == -1 && _blockItems.Count > 0)
+                        {
+                            LbBlocks.SelectedIndex = 0;
+                        }
                     }
                     else
                     {
@@ -107,7 +155,7 @@ namespace HelloGstarCAD.Views
         {
             if (_blockItems.Count > 0)
             {
-                var result = MessageBox.Show($"确定要清空列表中的 {_blockItems.Count} 种图块类型吗？", 
+                var result = MessageBox.Show($"确定要清空列表中的 {_blockItems.Count} 种图块类型吗？\n\n注意：清空后下次打开窗口时不会自动加载这些图块。", 
                     "确认清空", MessageBoxButton.YesNo, MessageBoxImage.Question);
                 
                 if (result == MessageBoxResult.Yes)
@@ -119,8 +167,11 @@ namespace HelloGstarCAD.Views
                     TxtStartNum.Text = "1";
                     UpdateNumberTemplatePreview();
                     
+                    // 清空保存的数据
+                    _dataStorageService.ClearSavedData();
+                    
                     var ed = GrxCAD.ApplicationServices.Application.DocumentManager.MdiActiveDocument.Editor;
-                    ed.WriteMessage("\n图块列表已清空。\n");
+                    ed.WriteMessage("\n图块列表已清空，并已删除保存的数据。\n");
                 }
             }
         }
@@ -198,6 +249,7 @@ namespace HelloGstarCAD.Views
 
             try
             {
+                // 使用AttributeValue（作为标题）作为预览
                 string previewTitle = _blockItems[0].AttributeValue;
                 var confirmResult = MessageBox.Show($"将为 {_blockItems.Count} 种图块创建沿线编号。\n格式: {TxtPrefix.Text}{startNumber}{previewTitle}{TxtSuffix.Text}\n\n是否继续？", 
                     "确认沿线编号", MessageBoxButton.YesNo, MessageBoxImage.Question);
@@ -238,12 +290,31 @@ namespace HelloGstarCAD.Views
             UpdateNumberTemplatePreview();
         }
 
+        // 修改：更新预览方法，根据选中图块显示预览
         private void UpdateNumberTemplatePreview()
         {
-            if (int.TryParse(TxtStartNum.Text, out int startNum))
+            BlockItem selectedBlock = null;
+            
+            // 获取当前选中的图块
+            int selectedIndex = LbBlocks.SelectedIndex;
+            if (selectedIndex >= 0 && selectedIndex < _blockItems.Count)
             {
-                string titleValue = _blockItems.Count > 0 ? _blockItems[0].AttributeValue : "标题";
+                selectedBlock = _blockItems[selectedIndex];
+            }
+            // 如果没有选中任何图块，但有图块存在，使用第一个图块
+            else if (_blockItems.Count > 0)
+            {
+                selectedBlock = _blockItems[0];
+            }
+            
+            if (selectedBlock != null && int.TryParse(TxtStartNum.Text, out int startNum))
+            {
+                string titleValue = selectedBlock.AttributeValue;
                 TxtPreview.Text = $"预览: {TxtPrefix.Text}{startNum}{titleValue}{TxtSuffix.Text}";
+            }
+            else if (_blockItems.Count == 0)
+            {
+                TxtPreview.Text = "预览: 请先选择图块";
             }
             else
             {
@@ -251,7 +322,7 @@ namespace HelloGstarCAD.Views
             }
         }
 
-        // ========== 新增：拖拽排序相关方法 ==========
+        // ========== 拖拽排序相关方法 ==========
 
         private void LbBlocks_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
@@ -263,6 +334,9 @@ namespace HelloGstarCAD.Views
             {
                 _dragStartIndex = LbBlocks.ItemContainerGenerator.IndexFromContainer(item);
                 LbBlocks.SelectedIndex = _dragStartIndex;
+                
+                // 关键：在这里更新预览
+                UpdateNumberTemplatePreview();
             }
         }
 
@@ -365,6 +439,9 @@ namespace HelloGstarCAD.Views
             _blockItems.Insert(newIndex, itemToMove);
             UpdateListIndexes();
             LbBlocks.SelectedIndex = newIndex;
+            
+            // 关键：拖拽排序后更新预览
+            UpdateNumberTemplatePreview();
         }
 
         private void ApplyDragEffect(ListBoxItem item)
